@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+message="${1}"
+
+# Get config from file. File should contain:
+# ntfy_cli_token=tokenToNtfyInstance
+# ntfy_server=urlToNtfyInstance
+# ntfy_topic=topicNameToSendTo
+
+source ~/.config/ntfy/.token
+
+if [ -z "${ntfy_topic}" ] || [ -z "${message}" ]
+then
+        echo "You have to provide topic and message!"
+        exit 1
+fi
+
+curl -d "${message}" -H "Authorization: Bearer ${ntfy_cli_token}" "https://${ntfy_server}/${ntfy_topic}"
+
+unset ntfy_cli_token
+unset ntfy_server
+unset ntfy_topic
