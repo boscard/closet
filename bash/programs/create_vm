@@ -15,7 +15,8 @@ TEMPLATES_DIR="${SCRIPT_DIR}/templates"
 # Default values
 DEFAULT_RAM=2048
 DEFAULT_CPUS=2
-DEFAULT_STORAGE_PATH="/var/lib/libvirt/images"
+DEFAULT_STORAGE_POOL="default"
+DEFAULT_STORAGE_PATH=""
 DEFAULT_DEBIAN_VERSION=12
 DEFAULT_DNS="8.8.8.8"
 
@@ -29,7 +30,7 @@ NC='\033[0m' # No Color
 # Global variables
 VM_NAME=""
 DISK_SIZE=""
-NETWORK_INTERFACE=""
+LIBVIRT_NETWORK=""
 RAM_SIZE=$DEFAULT_RAM
 CPU_COUNT=$DEFAULT_CPUS
 USERNAME="$(whoami)"
@@ -40,8 +41,10 @@ SSH_KEY_FILE=""
 STATIC_IP=""
 GATEWAY=""
 DNS_SERVER="$DEFAULT_DNS"
+STORAGE_POOL="$DEFAULT_STORAGE_POOL"
 STORAGE_PATH="$DEFAULT_STORAGE_PATH"
 DEBIAN_VERSION="$DEFAULT_DEBIAN_VERSION"
+LIBVIRT_URI=""
 AUTOSTART=false
 CONSOLE_ACCESS=false
 CUSTOM_USER_DATA=""
@@ -67,12 +70,12 @@ log_error() {
 # Usage function
 usage() {
     cat << EOF
-Usage: $SCRIPT_NAME <vm-name> <disk-size> <network-interface> [OPTIONS]
+Usage: $SCRIPT_NAME <vm-name> <disk-size> <libvirt-network> [OPTIONS]
 
 Required Parameters:
   vm-name              Name of the virtual machine
   disk-size            Size of the VM disk (e.g., 20G, 1024M)
-  network-interface    Network interface name (e.g., virbr0, br0)
+  libvirt-network      Libvirt network name (e.g., default, host-bridge)
 
 Optional Parameters:
   --ram <size>         RAM size in MB (default: $DEFAULT_RAM)
@@ -84,8 +87,10 @@ Optional Parameters:
   --static-ip <ip/cidr>       Static IP configuration (e.g., 192.168.1.100/24)
   --gateway <ip>              Gateway IP (required with static IP)
   --dns <ip>                  DNS server (default: $DEFAULT_DNS)
-  --storage-path <path>       VM storage directory (default: $DEFAULT_STORAGE_PATH)
+  --storage-pool <pool>       Libvirt storage pool (default: $DEFAULT_STORAGE_POOL)
+  --storage-path <path>       VM storage directory (overrides storage pool)
   --debian-version <ver>      Debian version (default: $DEFAULT_DEBIAN_VERSION)
+  --libvirt-uri <uri>         Libvirt connection URI (default: local system)
   --autostart                 Enable VM autostart
   --console                   Setup serial console access
   --user-data <file>          Custom cloud-init user-data file
@@ -93,9 +98,10 @@ Optional Parameters:
   --help                      Show this help message
 
 Examples:
-  $SCRIPT_NAME myvm 20G virbr0
-  $SCRIPT_NAME webserver 50G br0 --ram 4096 --cpus 4 --ssh-keys-github myuser
-  $SCRIPT_NAME db 100G virbr0 --static-ip 192.168.1.100/24 --gateway 192.168.1.1
+  $SCRIPT_NAME myvm 20G default
+  $SCRIPT_NAME webserver 50G host-bridge --ram 4096 --cpus 4 --ssh-keys-github myuser
+  $SCRIPT_NAME db 100G default --static-ip 192.168.1.100/24 --gateway 192.168.1.1
+  $SCRIPT_NAME remote 30G default --libvirt-uri qemu+ssh://user@host/system
 EOF
 }
 
@@ -179,6 +185,19 @@ get_package_name() {
     esac
 }
 
+# Libvirt URI helper function
+get_virsh_args() {
+    if [[ -n "$LIBVIRT_URI" ]]; then
+        echo "--connect $LIBVIRT_URI"
+    fi
+}
+
+get_virt_install_args() {
+    if [[ -n "$LIBVIRT_URI" ]]; then
+        echo "--connect $LIBVIRT_URI"
+    fi
+}
+
 # Prerequisites checking functions
 check_command() {
     local cmd="$1"
@@ -207,7 +226,9 @@ check_service() {
 
 check_libvirt_services() {
     # Check if libvirt is working by testing virsh connectivity
-    if virsh list >/dev/null 2>&1; then
+    local virsh_args
+    virsh_args=$(get_virsh_args)
+    if virsh $virsh_args list >/dev/null 2>&1; then
         return 0
     fi
     
@@ -304,15 +325,33 @@ validate_disk_size() {
     fi
 }
 
-validate_network_interface() {
-    if ! ip link show "$NETWORK_INTERFACE" >/dev/null 2>&1; then
-        log_error "Network interface '$NETWORK_INTERFACE' not found"
+validate_libvirt_network() {
+    local virsh_args
+    virsh_args=$(get_virsh_args)
+    
+    if ! virsh $virsh_args net-list --all | grep -q "\\b$LIBVIRT_NETWORK\\b"; then
+        log_error "Libvirt network '$LIBVIRT_NETWORK' not found"
+        log_info "Available networks:"
+        virsh $virsh_args net-list --all | tail -n +3 | awk '{print "  " $1}' || true
         return 1
+    fi
+    
+    # Check if network is active
+    if ! virsh $virsh_args net-list | grep -q "\\b$LIBVIRT_NETWORK\\b"; then
+        log_warning "Libvirt network '$LIBVIRT_NETWORK' is not active"
+        if [[ -n "$LIBVIRT_URI" ]]; then
+            log_info "Start it with: virsh --connect $LIBVIRT_URI net-start $LIBVIRT_NETWORK"
+        else
+            log_info "Start it with: virsh net-start $LIBVIRT_NETWORK"
+        fi
     fi
 }
 
 validate_vm_name() {
-    if virsh list --all | grep -q "\\b$VM_NAME\\b"; then
+    local virsh_args
+    virsh_args=$(get_virsh_args)
+    
+    if virsh $virsh_args list --all | grep -q "\\b$VM_NAME\\b"; then
         log_error "VM '$VM_NAME' already exists"
         return 1
     fi
@@ -333,6 +372,29 @@ validate_static_ip() {
     fi
 }
 
+validate_storage_pool() {
+    local virsh_args
+    virsh_args=$(get_virsh_args)
+    
+    if ! virsh $virsh_args pool-list --all | grep -q "\\b$STORAGE_POOL\\b"; then
+        log_error "Libvirt storage pool '$STORAGE_POOL' not found"
+        log_info "Available storage pools:"
+        virsh $virsh_args pool-list --all | tail -n +3 | awk '{print "  " $1}' || true
+        return 1
+    fi
+    
+    # Check if pool is active
+    if ! virsh $virsh_args pool-list | grep -q "\\b$STORAGE_POOL\\b"; then
+        log_warning "Libvirt storage pool '$STORAGE_POOL' is not active"
+        if [[ -n "$LIBVIRT_URI" ]]; then
+            log_info "Start it with: virsh --connect $LIBVIRT_URI pool-start $STORAGE_POOL"
+        else
+            log_info "Start it with: virsh pool-start $STORAGE_POOL"
+        fi
+        return 1
+    fi
+}
+
 validate_storage_path() {
     if [[ ! -d "$STORAGE_PATH" ]]; then
         log_error "Storage path does not exist: $STORAGE_PATH"
@@ -342,6 +404,26 @@ validate_storage_path() {
     if [[ ! -w "$STORAGE_PATH" ]]; then
         log_error "No write permission to storage path: $STORAGE_PATH"
         return 1
+    fi
+}
+
+get_storage_location() {
+    if [[ -n "$STORAGE_PATH" ]]; then
+        # Use explicit storage path
+        echo "$STORAGE_PATH"
+    else
+        # Get path from storage pool
+        local virsh_args
+        virsh_args=$(get_virsh_args)
+        local pool_path
+        pool_path=$(virsh $virsh_args pool-dumpxml "$STORAGE_POOL" | grep -o '<path>[^<]*</path>' | sed 's/<[^>]*>//g')
+        
+        if [[ -z "$pool_path" ]]; then
+            log_error "Could not determine path for storage pool '$STORAGE_POOL'"
+            return 1
+        fi
+        
+        echo "$pool_path"
     fi
 }
 
@@ -546,14 +628,14 @@ download_debian_image() {
     mkdir -p "$CACHE_DIR"
     
     if [[ -f "$image_file" ]]; then
-        log_info "Using cached Debian $DEBIAN_VERSION image"
+        log_info "Using cached Debian $DEBIAN_VERSION image" >&2
     else
-        log_info "Downloading Debian $DEBIAN_VERSION cloud image..."
+        log_info "Downloading Debian $DEBIAN_VERSION cloud image..." >&2
         if ! curl -L -o "$image_file" "$image_url"; then
-            log_error "Failed to download Debian image"
+            log_error "Failed to download Debian image" >&2
             return 1
         fi
-        log_success "Downloaded Debian $DEBIAN_VERSION image"
+        log_success "Downloaded Debian $DEBIAN_VERSION image" >&2
     fi
     
     echo "$image_file"
@@ -565,11 +647,28 @@ create_vm_disk() {
     
     log_info "Creating VM disk: $vm_disk"
     
-    # Create disk from base image
-    if ! qemu-img create -f qcow2 -F qcow2 -b "$base_image" "$vm_disk" "$DISK_SIZE"; then
+    # Copy base image to storage location to avoid permission issues
+    local storage_base_image="$STORAGE_PATH/$(basename "$base_image")"
+    
+    if [[ ! -f "$storage_base_image" ]]; then
+        log_info "Copying base image to storage location for libvirt access..."
+        if ! sudo cp "$base_image" "$storage_base_image"; then
+            log_error "Failed to copy base image to storage location"
+            return 1
+        fi
+        # Set appropriate permissions for libvirt
+        sudo chmod 644 "$storage_base_image"
+        sudo chown libvirt-qemu:libvirt-qemu "$storage_base_image" 2>/dev/null || true
+    fi
+    
+    # Create disk from base image in storage location
+    if ! sudo qemu-img create -f qcow2 -F qcow2 -b "$storage_base_image" "$vm_disk" "$DISK_SIZE"; then
         log_error "Failed to create VM disk"
         return 1
     fi
+    
+    # Set proper ownership for the VM disk
+    sudo chown libvirt-qemu:libvirt-qemu "$vm_disk" 2>/dev/null || true
     
     echo "$vm_disk"
 }
@@ -586,10 +685,13 @@ create_cloud_init_iso() {
         iso_cmd="mkisofs"
     fi
     
-    if ! "$iso_cmd" -output "$iso_file" -volid cidata -joliet -rock "$temp_dir"/{user-data,meta-data,network-config} 2>/dev/null; then
+    if ! sudo "$iso_cmd" -output "$iso_file" -volid cidata -joliet -rock "$temp_dir"/{user-data,meta-data,network-config} 2>/dev/null; then
         log_error "Failed to create cloud-init ISO"
         return 1
     fi
+    
+    # Set proper ownership for the cloud-init ISO
+    sudo chown libvirt-qemu:libvirt-qemu "$iso_file" 2>/dev/null || true
     
     echo "$iso_file"
 }
@@ -607,11 +709,16 @@ create_virtual_machine() {
         --disk "path=$vm_disk,format=qcow2"
         --disk "path=$cloud_init_iso,device=cdrom"
         --os-variant "debian$DEBIAN_VERSION"
-        --network "bridge=$NETWORK_INTERFACE"
+        --network "network=$LIBVIRT_NETWORK"
         --graphics none
         --import
         --noautoconsole
     )
+    
+    # Add libvirt URI if specified
+    if [[ -n "$LIBVIRT_URI" ]]; then
+        virt_install_args+=(--connect "$LIBVIRT_URI")
+    fi
     
     # Add console if requested
     if [[ "$CONSOLE_ACCESS" == true ]]; then
@@ -629,7 +736,10 @@ create_virtual_machine() {
 configure_vm_autostart() {
     if [[ "$AUTOSTART" == true ]]; then
         log_info "Enabling autostart for VM: $VM_NAME"
-        if ! virsh autostart "$VM_NAME"; then
+        local virsh_args
+        virsh_args=$(get_virsh_args)
+        
+        if ! virsh $virsh_args autostart "$VM_NAME"; then
             log_warning "Failed to enable autostart"
         else
             log_success "Autostart enabled"
@@ -646,8 +756,8 @@ cleanup_temp_files() {
     # Remove temporary directory
     [[ -d "$temp_dir" ]] && rm -rf "$temp_dir"
     
-    # Remove cloud-init ISO
-    [[ -f "$cloud_init_iso" ]] && rm -f "$cloud_init_iso"
+    # Remove cloud-init ISO (may need sudo)
+    [[ -f "$cloud_init_iso" ]] && sudo rm -f "$cloud_init_iso" 2>/dev/null || true
 }
 
 # Main execution functions
@@ -673,7 +783,7 @@ parse_arguments() {
     
     VM_NAME="$1"
     DISK_SIZE="$2"
-    NETWORK_INTERFACE="$3"
+    LIBVIRT_NETWORK="$3"
     shift 3
     
     while [[ $# -gt 0 ]]; do
@@ -717,6 +827,10 @@ parse_arguments() {
                 DNS_SERVER="$2"
                 shift 2
                 ;;
+            --storage-pool)
+                STORAGE_POOL="$2"
+                shift 2
+                ;;
             --storage-path)
                 STORAGE_PATH="$2"
                 shift 2
@@ -727,6 +841,10 @@ parse_arguments() {
                 ;;
             --user-data)
                 CUSTOM_USER_DATA="$2"
+                shift 2
+                ;;
+            --libvirt-uri)
+                LIBVIRT_URI="$2"
                 shift 2
                 ;;
             --autostart)
@@ -758,10 +876,16 @@ validate_parameters() {
     log_info "Validating parameters..."
     
     validate_disk_size || exit 1
-    validate_network_interface || exit 1
+    validate_libvirt_network || exit 1
     validate_vm_name || exit 1
     validate_static_ip || exit 1
-    validate_storage_path || exit 1
+    
+    # Validate storage (pool or path)
+    if [[ -n "$STORAGE_PATH" ]]; then
+        validate_storage_path || exit 1
+    else
+        validate_storage_pool || exit 1
+    fi
     
     # Validate custom user-data file
     if [[ -n "$CUSTOM_USER_DATA" && ! -f "$CUSTOM_USER_DATA" ]]; then
@@ -791,6 +915,15 @@ main() {
     
     # Validate parameters
     validate_parameters
+    
+    # Get storage location (from pool or path)
+    local storage_location
+    if ! storage_location=$(get_storage_location); then
+        exit 1
+    fi
+    
+    # Update STORAGE_PATH for use in other functions
+    STORAGE_PATH="$storage_location"
     
     # Get SSH keys
     local ssh_keys
@@ -842,7 +975,7 @@ main() {
     echo "  RAM: ${RAM_SIZE}MB"
     echo "  CPUs: $CPU_COUNT"
     echo "  Disk: $DISK_SIZE"
-    echo "  Network: $NETWORK_INTERFACE"
+    echo "  Network: $LIBVIRT_NETWORK"
     echo "  Username: $USERNAME"
     echo "  SSH Keys: $SSH_KEYS_SOURCE"
     [[ -n "$STATIC_IP" ]] && echo "  Static IP: $STATIC_IP"

@@ -100,13 +100,13 @@ sudo systemctl enable libvirtd
 
 #### Basic Syntax
 ```bash
-./create_vm <vm-name> <disk-size> <network-interface> [OPTIONS]
+./create_vm <vm-name> <disk-size> <libvirt-network> [OPTIONS]
 ```
 
 #### Required Parameters
 - `vm-name`: Name of the virtual machine
 - `disk-size`: Size of the VM disk (e.g., 20G, 1024M)
-- `network-interface`: Network interface name (e.g., virbr0, br0)
+- `libvirt-network`: Libvirt network name (e.g., default, host-bridge)
 
 #### Optional Parameters
 - `--ram <size>`: RAM size in MB (default: 2048)
@@ -120,6 +120,7 @@ sudo systemctl enable libvirtd
 - `--dns <ip>`: DNS server (default: 8.8.8.8)
 - `--storage-path <path>`: VM storage directory (default: /var/lib/libvirt/images/)
 - `--debian-version <ver>`: Debian version - 11 or 12 (default: 12)
+- `--libvirt-uri <uri>`: Libvirt connection URI (default: local system)
 - `--autostart`: Enable VM autostart
 - `--console`: Setup serial console access
 - `--user-data <file>`: Custom cloud-init user-data file
@@ -130,12 +131,12 @@ sudo systemctl enable libvirtd
 
 **Basic VM Creation:**
 ```bash
-./create_vm myvm 20G virbr0
+./create_vm myvm 20G default
 ```
 
 **Advanced VM with Custom Configuration:**
 ```bash
-./create_vm webserver 50G br0 \
+./create_vm webserver 50G host-bridge \
   --ram 4096 \
   --cpus 4 \
   --user admin \
@@ -146,7 +147,7 @@ sudo systemctl enable libvirtd
 
 **VM with Static IP:**
 ```bash
-./create_vm database 100G virbr0 \
+./create_vm database 100G default \
   --static-ip 192.168.1.100/24 \
   --gateway 192.168.1.1 \
   --dns 192.168.1.1 \
@@ -156,7 +157,7 @@ sudo systemctl enable libvirtd
 
 **VM with Custom Storage and GitLab Keys:**
 ```bash
-./create_vm development 30G virbr0 \
+./create_vm development 30G default \
   --storage-path /home/vms \
   --ssh-keys-gitlab myusername \
   --debian-version 11
@@ -164,9 +165,18 @@ sudo systemctl enable libvirtd
 
 **VM with Custom Cloud-Init Configuration:**
 ```bash
-./create_vm custom 25G virbr0 \
+./create_vm custom 25G default \
   --user-data /path/to/custom-user-data.yaml \
   --user developer
+```
+
+**Remote VM Creation:**
+```bash
+./create_vm remote-server 40G default \
+  --libvirt-uri qemu+ssh://user@remote-host/system \
+  --ram 4096 \
+  --cpus 2 \
+  --ssh-keys-github myusername
 ```
 
 ### SSH Key Sources
@@ -179,29 +189,29 @@ The script automatically uses the first available SSH public key from:
 
 #### GitHub SSH Keys
 ```bash
-./create_vm myvm 20G virbr0 --ssh-keys-github yourusername
+./create_vm myvm 20G default --ssh-keys-github yourusername
 ```
 Fetches public keys from: `https://github.com/yourusername.keys`
 
 #### GitLab SSH Keys
 ```bash
-./create_vm myvm 20G virbr0 --ssh-keys-gitlab yourusername
+./create_vm myvm 20G default --ssh-keys-gitlab yourusername
 ```
 Fetches public keys from: `https://gitlab.com/yourusername.keys`
 
 #### Custom SSH Key File
 ```bash
-./create_vm myvm 20G virbr0 --ssh-key-file /path/to/custom.pub
+./create_vm myvm 20G default --ssh-key-file /path/to/custom.pub
 ```
 
 ### Network Configuration
 
 #### DHCP (Default)
-VMs automatically obtain IP addresses via DHCP from the specified network interface.
+VMs automatically obtain IP addresses via DHCP from the specified libvirt network.
 
 #### Static IP
 ```bash
-./create_vm myvm 20G virbr0 \
+./create_vm myvm 20G default \
   --static-ip 192.168.1.100/24 \
   --gateway 192.168.1.1 \
   --dns 8.8.8.8
@@ -367,7 +377,7 @@ chmod 600 ~/.config/ntfy/.token
 **Integration with Other Scripts:**
 ```bash
 # After VM creation
-./create_vm myvm 20G virbr0 && ./ntfy_cli "VM 'myvm' created successfully"
+./create_vm myvm 20G default && ./ntfy_cli "VM 'myvm' created successfully"
 
 # System monitoring
 if [ $(df / | tail -1 | awk '{print $5}' | sed 's/%//') -gt 90 ]; then
