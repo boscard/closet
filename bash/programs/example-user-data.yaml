@@ -1,0 +1,120 @@
+#cloud-config
+# Example custom user-data file for create-debian-vm script
+# Usage: ./create-debian-vm myvm 20G virbr0 --user-data example-user-data.yaml
+
+# User configuration
+users:
+  - name: developer
+    groups: sudo, docker, www-data
+    shell: /bin/bash
+    sudo: ['ALL=(ALL) NOPASSWD:ALL']
+    ssh_authorized_keys:
+      - ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC... # Replace with your SSH public key
+    lock_passwd: true
+
+# SSH configuration
+ssh_pwauth: false
+disable_root: true
+
+# System updates
+package_update: true
+package_upgrade: true
+
+# Install additional packages
+packages:
+  - curl
+  - wget
+  - vim
+  - htop
+  - git
+  - ufw
+  - docker.io
+  - nginx
+  - nodejs
+  - npm
+  - python3
+  - python3-pip
+  - build-essential
+
+# Write files to the system
+write_files:
+  - path: /etc/nginx/sites-available/default
+    content: |
+      server {
+          listen 80 default_server;
+          listen [::]:80 default_server;
+          
+          root /var/www/html;
+          index index.html index.htm index.nginx-debian.html;
+          
+          server_name _;
+          
+          location / {
+              try_files $uri $uri/ =404;
+          }
+      }
+    permissions: '0644'
+    owner: root:root
+
+  - path: /var/www/html/index.html
+    content: |
+      <!DOCTYPE html>
+      <html>
+      <head>
+          <title>Welcome to Your New VM</title>
+      </head>
+      <body>
+          <h1>VM Setup Complete!</h1>
+          <p>This VM was created with cloud-init and is ready for development.</p>
+          <p>Services installed: Docker, Nginx, Node.js, Python3</p>
+      </body>
+      </html>
+    permissions: '0644'
+    owner: www-data:www-data
+
+# Run commands after package installation
+runcmd:
+  # Enable and start services
+  - systemctl enable ssh
+  - systemctl enable docker
+  - systemctl enable nginx
+  - systemctl start docker
+  - systemctl start nginx
+  
+  # Configure firewall
+  - ufw allow ssh
+  - ufw allow 'Nginx Full'
+  - ufw --force enable
+  
+  # Add user to docker group
+  - usermod -aG docker developer
+  
+  # Install global npm packages
+  - npm install -g pm2
+  
+  # Create development directories
+  - mkdir -p /home/developer/projects
+  - chown developer:developer /home/developer/projects
+  
+  # Set up Python virtual environment
+  - pip3 install virtualenv
+  
+  # Log completion
+  - echo "Custom VM setup completed at $(date)" > /var/log/cloud-init-complete
+
+# Set timezone
+timezone: Europe/Warsaw
+
+# Set hostname
+hostname: dev-vm
+
+# Final message
+final_message: "Development VM is ready! SSH in and start coding!"
+
+# Power state - reboot after setup
+power_state:
+  delay: "+1"
+  mode: reboot
+  message: "Rebooting after cloud-init setup"
+  timeout: 30
+  condition: True
