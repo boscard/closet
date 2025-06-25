@@ -1,8 +1,14 @@
-# KVM Debian VM Creation Script
+# Bash Programs Collection
+
+A collection of useful bash scripts for system administration and automation.
+
+## Scripts Included
+
+### 1. `create-vm` - KVM Debian VM Creation Script
 
 A comprehensive bash script for creating Debian virtual machines on KVM/libvirt hypervisors with cloud-init configuration.
 
-## Features
+#### Features
 
 - **Automated VM Creation**: Creates Debian 11 or 12 VMs with minimal user input
 - **Cloud-init Integration**: Automatic system configuration and user setup
@@ -12,19 +18,19 @@ A comprehensive bash script for creating Debian virtual machines on KVM/libvirt 
 - **Comprehensive Error Handling**: Clear error messages and validation
 - **Customizable Resources**: Configurable RAM, CPU, disk size, and storage location
 - **Security Focused**: SSH key-only authentication, password login disabled
+- **Multi-Distribution Support**: Works on both Debian and Fedora hosts
 
-## Prerequisites
+#### Prerequisites
 
 The script automatically detects your Linux distribution and checks for required components with distribution-specific package names:
 
-### Supported Distributions
+**Supported Distributions:**
 - **Debian/Ubuntu**: Uses `apt` package manager
 - **Fedora/RHEL/CentOS/Rocky/AlmaLinux**: Uses `dnf` package manager
 
-### Required Packages
-The script will show the correct package names for your distribution:
+**Required Packages:**
 
-**Debian/Ubuntu:**
+*Debian/Ubuntu:*
 - `libvirt-clients` (virsh command)
 - `virtinst` (virt-install command)
 - `qemu-utils` (qemu-img command)
@@ -32,7 +38,7 @@ The script will show the correct package names for your distribution:
 - `curl` (downloading images and SSH keys)
 - `iproute2` (ip command)
 
-**Fedora/RHEL/CentOS/Rocky/AlmaLinux:**
+*Fedora/RHEL/CentOS/Rocky/AlmaLinux:*
 - `libvirt-client` (virsh command)
 - `virt-install` (virt-install command)
 - `qemu-img` (qemu-img command)
@@ -40,34 +46,28 @@ The script will show the correct package names for your distribution:
 - `curl` (downloading images and SSH keys)
 - `iproute` (ip command)
 
-### Required Services
+**Required Services:**
 - Libvirt services must be running:
   - **Modern libvirt** (Fedora 35+): `virtqemud`, `virtnetworkd` (modular daemons)
   - **Legacy libvirt** (older systems): `libvirtd` (monolithic daemon)
   - The script automatically detects which services are available and working
 
-### User Permissions
+**User Permissions:**
 - User must be in `libvirt` group or run as root
 
-### System Requirements
+**System Requirements:**
 - KVM support enabled (`/dev/kvm` must exist)
 - Sufficient disk space for VM images
 - Network interface specified must exist
 
-## Installation
+#### Installation
 
-1. Download the script:
+1. Check prerequisites:
 ```bash
-wget https://raw.githubusercontent.com/your-repo/create-debian-vm
-chmod +x create-debian-vm
+./create-vm --check-only
 ```
 
-2. Check prerequisites:
-```bash
-./create-debian-vm --check-only
-```
-
-3. Install missing components if needed:
+2. Install missing components if needed:
 
 **For Debian/Ubuntu:**
 ```bash
@@ -96,19 +96,19 @@ sudo systemctl start libvirtd
 sudo systemctl enable libvirtd
 ```
 
-## Usage
+#### Usage
 
-### Basic Syntax
+**Basic Syntax:**
 ```bash
-./create-debian-vm <vm-name> <disk-size> <network-interface> [OPTIONS]
+./create-vm <vm-name> <disk-size> <network-interface> [OPTIONS]
 ```
 
-### Required Parameters
+**Required Parameters:**
 - `vm-name`: Name of the virtual machine
 - `disk-size`: Size of the VM disk (e.g., 20G, 1024M)
 - `network-interface`: Network interface name (e.g., virbr0, br0)
 
-### Optional Parameters
+**Optional Parameters:**
 - `--ram <size>`: RAM size in MB (default: 2048)
 - `--cpus <count>`: Number of CPUs (default: 2)
 - `--user <username>`: VM username (default: current user)
@@ -126,55 +126,73 @@ sudo systemctl enable libvirtd
 - `--check-only`: Only check prerequisites and exit
 - `--help`: Show help message
 
-## Examples
-
-### Basic VM Creation
+**Examples:**
 ```bash
 # Create a basic VM with default settings
-./create-debian-vm myvm 20G virbr0
-```
+./create-vm myvm 20G virbr0
 
-### Advanced VM with Custom Configuration
-```bash
 # Create a web server with custom specs and GitHub SSH keys
-./create-debian-vm webserver 50G br0 \
+./create-vm webserver 50G br0 \
   --ram 4096 \
   --cpus 4 \
   --user admin \
   --ssh-keys-github myusername \
   --autostart \
   --console
-```
 
-### VM with Static IP
-```bash
 # Create a database server with static IP
-./create-debian-vm database 100G virbr0 \
+./create-vm database 100G virbr0 \
   --static-ip 192.168.1.100/24 \
   --gateway 192.168.1.1 \
   --dns 192.168.1.1 \
   --ram 8192 \
   --cpus 4
-```
 
-### VM with Custom Storage and GitLab Keys
-```bash
 # Create VM with custom storage location and GitLab SSH keys
-./create-debian-vm development 30G virbr0 \
+./create-vm development 30G virbr0 \
   --storage-path /home/vms \
   --ssh-keys-gitlab myusername \
   --debian-version 11
-```
 
-### VM with Custom User-Data
-```bash
 # Create VM with custom cloud-init configuration
-./create-debian-vm custom 25G virbr0 \
+./create-vm custom 25G virbr0 \
   --user-data /path/to/custom-user-data.yaml \
   --user developer
 ```
 
-## SSH Key Sources
+### 2. `ntfy_cli` - Notification CLI Tool
+
+A simple bash script for sending notifications via ntfy.sh service.
+
+#### Features
+
+- **Simple Notifications**: Send messages to ntfy topics
+- **Token Authentication**: Supports bearer token authentication
+- **Configurable**: Uses configuration file for server settings
+- **Secure**: Automatically unsets sensitive variables after use
+
+#### Configuration
+
+Create a configuration file at `~/.config/ntfy/.token` with:
+```bash
+ntfy_cli_token=your_token_here
+ntfy_server=your.ntfy.server.com
+ntfy_topic=your_topic_name
+```
+
+#### Usage
+
+```bash
+./ntfy_cli "Your message here"
+```
+
+**Example:**
+```bash
+./ntfy_cli "VM deployment completed successfully"
+./ntfy_cli "System backup finished"
+```
+
+## SSH Key Sources (for create-vm)
 
 ### Local SSH Keys (Default)
 The script automatically uses the first available SSH public key from:
@@ -184,29 +202,29 @@ The script automatically uses the first available SSH public key from:
 
 ### GitHub SSH Keys
 ```bash
-./create-debian-vm myvm 20G virbr0 --ssh-keys-github yourusername
+./create-vm myvm 20G virbr0 --ssh-keys-github yourusername
 ```
 Fetches public keys from: `https://github.com/yourusername.keys`
 
 ### GitLab SSH Keys
 ```bash
-./create-debian-vm myvm 20G virbr0 --ssh-keys-gitlab yourusername
+./create-vm myvm 20G virbr0 --ssh-keys-gitlab yourusername
 ```
 Fetches public keys from: `https://gitlab.com/yourusername.keys`
 
 ### Custom SSH Key File
 ```bash
-./create-debian-vm myvm 20G virbr0 --ssh-key-file /path/to/custom.pub
+./create-vm myvm 20G virbr0 --ssh-key-file /path/to/custom.pub
 ```
 
-## Network Configuration
+## Network Configuration (for create-vm)
 
 ### DHCP (Default)
 VMs automatically obtain IP addresses via DHCP from the specified network interface.
 
 ### Static IP
 ```bash
-./create-debian-vm myvm 20G virbr0 \
+./create-vm myvm 20G virbr0 \
   --static-ip 192.168.1.100/24 \
   --gateway 192.168.1.1 \
   --dns 8.8.8.8
@@ -239,7 +257,7 @@ virsh dominfo myvm
 virsh undefine myvm --remove-all-storage
 ```
 
-## SSH Access
+## SSH Access (for VMs created with create-vm)
 
 All VMs are configured with:
 - SSH key-only authentication
@@ -254,9 +272,9 @@ ssh username@vm-ip-address
 
 ## Troubleshooting
 
-### Prerequisites Check
+### Prerequisites Check (create-vm)
 ```bash
-./create-debian-vm --check-only
+./create-vm --check-only
 ```
 
 ### Common Issues
@@ -266,35 +284,42 @@ ssh username@vm-ip-address
 3. **VM Already Exists**: Choose a different VM name or remove existing VM
 4. **Insufficient Disk Space**: Check available space in storage directory
 5. **SSH Keys Not Found**: Verify SSH key source (local file, GitHub/GitLab username)
+6. **ntfy_cli Configuration**: Ensure `~/.config/ntfy/.token` file exists and is properly formatted
 
 ### Debug Mode
-For detailed debugging, modify the script to add:
+For detailed debugging, modify scripts to add:
 ```bash
 set -x  # Enable debug mode
 ```
 
 ## File Structure
 
-The script creates the following directory structure:
 ```
-create-debian-vm           # Main executable script
-├── cache/                 # Downloaded Debian images
-│   ├── debian-11-generic-amd64.qcow2
-│   └── debian-12-generic-amd64.qcow2
-└── README.md             # This documentation
+bash/programs/
+├── create-vm                      # VM creation script
+├── ntfy_cli                       # Notification CLI tool
+├── example-user-data.yaml         # Example cloud-init configuration
+├── README.md                      # This documentation
+└── cache/                         # Will be created for image caching
+    └── debian-*-generic-amd64.qcow2  # Downloaded images
 ```
 
 ## Security Considerations
 
+### create-vm
 - SSH password authentication is disabled
 - Root login is disabled
 - UFW firewall is enabled by default
 - User account has sudo access without password (modify user-data if needed)
 - VM disks are created with appropriate permissions
 
+### ntfy_cli
+- Sensitive tokens are automatically unset after use
+- Configuration file should have restricted permissions (600)
+
 ## Customization
 
-### Custom Cloud-Init Configuration
+### Custom Cloud-Init Configuration (create-vm)
 Create a custom `user-data.yaml` file and use the `--user-data` parameter:
 
 ```yaml
@@ -317,9 +342,22 @@ runcmd:
   - systemctl start docker
 ```
 
+### ntfy Configuration
+Customize the ntfy configuration by editing `~/.config/ntfy/.token`:
+```bash
+# Your ntfy server token
+ntfy_cli_token=tk_your_token_here
+
+# Your ntfy server URL (without https://)
+ntfy_server=ntfy.example.com
+
+# Default topic to send messages to
+ntfy_topic=alerts
+```
+
 ## License
 
-This script is provided as-is for educational and production use. Modify as needed for your environment.
+These scripts are provided as-is for educational and production use. Modify as needed for your environment.
 
 ## Contributing
 

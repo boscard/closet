@@ -6,10 +6,11 @@ This project provides a comprehensive bash script for creating Debian virtual ma
 
 ### Files Created
 
-1. **`create-debian-vm`** - Main executable script (755 permissions)
-2. **`README.md`** - Comprehensive documentation and usage guide
-3. **`example-user-data.yaml`** - Example custom cloud-init configuration
-4. **`SUMMARY.md`** - This implementation summary
+1. **`create-vm`** - Main executable script (755 permissions)
+2. **`ntfy_cli`** - Notification CLI tool (existing)
+3. **`README.md`** - Comprehensive documentation and usage guide
+4. **`example-user-data.yaml`** - Example custom cloud-init configuration
+5. **`SUMMARY.md`** - This implementation summary
 
 ## Script Features Implemented
 
@@ -84,12 +85,12 @@ This project provides a comprehensive bash script for creating Debian virtual ma
 
 ### Basic VM Creation
 ```bash
-./create-debian-vm myvm 20G virbr0
+./create-vm myvm 20G virbr0
 ```
 
 ### Advanced Configuration
 ```bash
-./create-debian-vm webserver 50G br0 \
+./create-vm webserver 50G br0 \
   --ram 4096 \
   --cpus 4 \
   --user admin \
@@ -102,7 +103,7 @@ This project provides a comprehensive bash script for creating Debian virtual ma
 
 ### Prerequisites Check
 ```bash
-./create-debian-vm --check-only
+./create-vm --check-only
 ```
 
 ## Testing Results
@@ -123,7 +124,8 @@ The script correctly identifies missing components:
 ## File Structure Created
 ```
 bash/programs/
-├── create-debian-vm           # Main executable script
+├── create-vm                  # Main executable script
+├── ntfy_cli                   # Notification CLI tool
 ├── README.md                  # Documentation
 ├── example-user-data.yaml     # Example configuration
 ├── SUMMARY.md                 # This summary
@@ -145,7 +147,7 @@ The script is production-ready with:
 ## Next Steps for Users
 
 1. **Install Prerequisites**: Follow README.md installation section
-2. **Test Prerequisites**: Run `./create-debian-vm --check-only`
+2. **Test Prerequisites**: Run `./create-vm --check-only`
 3. **Create First VM**: Use basic syntax with your parameters
 4. **Customize**: Use optional parameters and custom user-data as needed
 
