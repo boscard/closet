@@ -50,6 +50,11 @@ CONSOLE_ACCESS=false
 CUSTOM_USER_DATA=""
 CHECK_ONLY=false
 
+# Privilege escalation variables
+IS_ROOT=false
+SUDO_AVAILABLE=false
+SUDO_CMD=""
+
 # Logging functions
 log_info() {
     echo -e "${BLUE}[INFO]${NC} $1"
@@ -181,6 +186,95 @@ get_package_name() {
             ;;
         *)
             echo "$cmd"
+            ;;
+    esac
+}
+
+# Privilege detection and management functions
+detect_privileges() {
+    log_info "Detecting privilege requirements..."
+    
+    # Check if running as root
+    if [[ $EUID -eq 0 ]]; then
+        IS_ROOT=true
+        SUDO_CMD=""
+        log_info "Running as root user"
+        return 0
+    fi
+    
+    # Check if sudo is available
+    if command -v sudo >/dev/null 2>&1; then
+        # Test if sudo works without password prompt for a simple command
+        if sudo -n true 2>/dev/null; then
+            SUDO_AVAILABLE=true
+            SUDO_CMD="sudo"
+            log_info "Sudo available without password prompt"
+        elif sudo -v 2>/dev/null; then
+            SUDO_AVAILABLE=true
+            SUDO_CMD="sudo"
+            log_info "Sudo available (may require password)"
+        else
+            SUDO_AVAILABLE=false
+            SUDO_CMD=""
+            log_warning "Sudo available but authentication failed"
+        fi
+    else
+        SUDO_AVAILABLE=false
+        SUDO_CMD=""
+        log_warning "Sudo not available"
+    fi
+    
+    # Display privilege status
+    if [[ "$IS_ROOT" == true ]]; then
+        log_success "Privilege escalation: Running as root"
+    elif [[ "$SUDO_AVAILABLE" == true ]]; then
+        log_success "Privilege escalation: Using sudo"
+    else
+        log_warning "Privilege escalation: Limited - some operations may fail"
+    fi
+}
+
+# Execute command with appropriate privileges
+run_privileged() {
+    local cmd="$*"
+    
+    if [[ "$IS_ROOT" == true ]]; then
+        # Running as root, execute directly
+        eval "$cmd"
+    elif [[ "$SUDO_AVAILABLE" == true ]]; then
+        # Use sudo
+        eval "$SUDO_CMD $cmd"
+    else
+        # No privilege escalation available, try anyway
+        log_warning "Attempting command without privileges: $cmd"
+        eval "$cmd"
+    fi
+}
+
+# Check if we need privileges for a specific operation
+needs_privileges() {
+    local operation="$1"
+    local target_path="$2"
+    
+    case "$operation" in
+        "write_storage")
+            # Check if we can write to storage location
+            if [[ -w "$target_path" ]]; then
+                return 1  # No privileges needed
+            else
+                return 0  # Privileges needed
+            fi
+            ;;
+        "chown")
+            # chown always needs privileges unless running as root
+            if [[ "$IS_ROOT" == true ]]; then
+                return 1  # No additional privileges needed
+            else
+                return 0  # Privileges needed
+            fi
+            ;;
+        *)
+            return 0  # Default: assume privileges needed
             ;;
     esac
 }
@@ -401,9 +495,14 @@ validate_storage_path() {
         return 1
     fi
     
+    # Check write permissions, considering privilege escalation
     if [[ ! -w "$STORAGE_PATH" ]]; then
-        log_error "No write permission to storage path: $STORAGE_PATH"
-        return 1
+        if [[ "$IS_ROOT" == true ]] || [[ "$SUDO_AVAILABLE" == true ]]; then
+            log_info "Storage path requires elevated privileges (will use $([[ "$IS_ROOT" == true ]] && echo "root" || echo "sudo"))"
+        else
+            log_error "No write permission to storage path: $STORAGE_PATH"
+            return 1
+        fi
     fi
 }
 
@@ -597,7 +696,7 @@ create_network_config() {
         cat > "$file" << EOF
 version: 2
 ethernets:
-  eth0:
+  enp1s0:
     addresses:
       - $STATIC_IP
     gateway4: $GATEWAY
@@ -610,7 +709,7 @@ EOF
         cat > "$file" << EOF
 version: 2
 ethernets:
-  eth0:
+  enp1s0:
     dhcp4: true
 EOF
     fi
@@ -644,38 +743,72 @@ download_debian_image() {
 create_vm_disk() {
     local base_image="$1"
     local vm_disk="$STORAGE_PATH/${VM_NAME}.qcow2"
+    local virsh_args
+    virsh_args=$(get_virsh_args)
     
     log_info "Creating VM disk: $vm_disk"
     
-    # Copy base image to storage location to avoid permission issues
-    local storage_base_image="$STORAGE_PATH/$(basename "$base_image")"
-    
-    if [[ ! -f "$storage_base_image" ]]; then
-        log_info "Copying base image to storage location for libvirt access..."
-        if ! sudo cp "$base_image" "$storage_base_image"; then
-            log_error "Failed to copy base image to storage location"
+    # Check if we're using storage pools or direct paths
+    if [[ -n "$STORAGE_PATH" && "$STORAGE_PATH" != "/var/lib/libvirt/images" ]]; then
+        # Using explicit storage path - create disk manually
+        local storage_base_image="$STORAGE_PATH/$(basename "$base_image")"
+        
+        if [[ ! -f "$storage_base_image" ]]; then
+            log_info "Copying base image to storage location for libvirt access..."
+            if ! run_privileged cp "$base_image" "$storage_base_image"; then
+                log_error "Failed to copy base image to storage location"
+                return 1
+            fi
+            # Set appropriate permissions for libvirt
+            run_privileged chmod 644 "$storage_base_image"
+            if needs_privileges "chown" "$storage_base_image"; then
+                run_privileged chown libvirt-qemu:libvirt-qemu "$storage_base_image" 2>/dev/null || true
+            fi
+        fi
+        
+        # Create disk from base image in storage location
+        if ! run_privileged qemu-img create -f qcow2 -F qcow2 -b "$storage_base_image" "$vm_disk" "$DISK_SIZE"; then
+            log_error "Failed to create VM disk"
             return 1
         fi
-        # Set appropriate permissions for libvirt
-        sudo chmod 644 "$storage_base_image"
-        sudo chown libvirt-qemu:libvirt-qemu "$storage_base_image" 2>/dev/null || true
+        
+        # Set proper ownership for the VM disk
+        if needs_privileges "chown" "$vm_disk"; then
+            run_privileged chown libvirt-qemu:libvirt-qemu "$vm_disk" 2>/dev/null || true
+        fi
+    else
+        # Using storage pool - create volume using libvirt
+        local base_volume_name="$(basename "$base_image")"
+        local vm_volume_name="${VM_NAME}.qcow2"
+        
+        # First, ensure base image exists as a volume in the pool
+        if ! virsh $virsh_args vol-list "$STORAGE_POOL" | grep -q "\\b$base_volume_name\\b"; then
+            log_info "Creating base image volume in storage pool..."
+            if ! virsh $virsh_args vol-create-as "$STORAGE_POOL" "$base_volume_name" 0 --format qcow2; then
+                log_error "Failed to create base volume"
+                return 1
+            fi
+            # Upload the base image to the volume
+            if ! virsh $virsh_args vol-upload --pool "$STORAGE_POOL" "$base_volume_name" "$base_image"; then
+                log_error "Failed to upload base image to volume"
+                return 1
+            fi
+        fi
+        
+        # Create VM volume with backing volume
+        log_info "Creating VM volume with backing image..."
+        if ! virsh $virsh_args vol-create-as "$STORAGE_POOL" "$vm_volume_name" "$DISK_SIZE" --format qcow2 --backing-vol "$base_volume_name" --backing-vol-format qcow2; then
+            log_error "Failed to create VM volume"
+            return 1
+        fi
     fi
-    
-    # Create disk from base image in storage location
-    if ! sudo qemu-img create -f qcow2 -F qcow2 -b "$storage_base_image" "$vm_disk" "$DISK_SIZE"; then
-        log_error "Failed to create VM disk"
-        return 1
-    fi
-    
-    # Set proper ownership for the VM disk
-    sudo chown libvirt-qemu:libvirt-qemu "$vm_disk" 2>/dev/null || true
     
     echo "$vm_disk"
 }
 
 create_cloud_init_iso() {
     local temp_dir="$1"
-    local iso_file="$STORAGE_PATH/${VM_NAME}-cloud-init.iso"
+    local iso_file="/tmp/${VM_NAME}-cloud-init.iso"
     
     log_info "Creating cloud-init ISO: $iso_file"
     
@@ -685,13 +818,10 @@ create_cloud_init_iso() {
         iso_cmd="mkisofs"
     fi
     
-    if ! sudo "$iso_cmd" -output "$iso_file" -volid cidata -joliet -rock "$temp_dir"/{user-data,meta-data,network-config} 2>/dev/null; then
+    if ! "$iso_cmd" -output "$iso_file" -volid cidata -joliet -rock "$temp_dir"/{user-data,meta-data,network-config} 2>/dev/null; then
         log_error "Failed to create cloud-init ISO"
         return 1
     fi
-    
-    # Set proper ownership for the cloud-init ISO
-    sudo chown libvirt-qemu:libvirt-qemu "$iso_file" 2>/dev/null || true
     
     echo "$iso_file"
 }
@@ -702,11 +832,22 @@ create_virtual_machine() {
     
     log_info "Creating virtual machine: $VM_NAME"
     
+    # Use different disk specification based on whether we're using storage pools or paths
+    local disk_spec
+    if [[ -n "$STORAGE_PATH" && "$STORAGE_PATH" != "/var/lib/libvirt/images" ]]; then
+        # Using explicit storage path
+        disk_spec="path=$vm_disk,format=qcow2"
+    else
+        # Using storage pool - specify the volume directly
+        local volume_name="${VM_NAME}.qcow2"
+        disk_spec="vol=$STORAGE_POOL/$volume_name"
+    fi
+    
     local virt_install_args=(
         --name "$VM_NAME"
         --ram "$RAM_SIZE"
         --vcpus "$CPU_COUNT"
-        --disk "path=$vm_disk,format=qcow2"
+        --disk "$disk_spec"
         --disk "path=$cloud_init_iso,device=cdrom"
         --os-variant "debian$DEBIAN_VERSION"
         --network "network=$LIBVIRT_NETWORK"
@@ -756,8 +897,10 @@ cleanup_temp_files() {
     # Remove temporary directory
     [[ -d "$temp_dir" ]] && rm -rf "$temp_dir"
     
-    # Remove cloud-init ISO (may need sudo)
-    [[ -f "$cloud_init_iso" ]] && sudo rm -f "$cloud_init_iso" 2>/dev/null || true
+    # Remove cloud-init ISO (may need privileges)
+    if [[ -f "$cloud_init_iso" ]]; then
+        run_privileged rm -f "$cloud_init_iso" 2>/dev/null || true
+    fi
 }
 
 # Main execution functions
@@ -902,6 +1045,9 @@ main() {
     # Parse command line arguments
     parse_arguments "$@"
     
+    # Detect privilege requirements
+    detect_privileges
+    
     # Check prerequisites first
     if ! check_prerequisites; then
         exit 1
@@ -936,7 +1082,7 @@ main() {
     temp_dir=$(mktemp -d)
     
     # Trap to cleanup on exit
-    trap 'cleanup_temp_files "$temp_dir" "$STORAGE_PATH/${VM_NAME}-cloud-init.iso"' EXIT
+    trap 'cleanup_temp_files "$temp_dir" "/tmp/${VM_NAME}-cloud-init.iso"' EXIT
     
     # Download Debian image
     local base_image
