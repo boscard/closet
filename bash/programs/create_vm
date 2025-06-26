@@ -279,6 +279,46 @@ needs_privileges() {
     esac
 }
 
+# SELinux support functions
+is_selinux_enabled() {
+    # Check if SELinux is enabled and enforcing
+    if command -v getenforce >/dev/null 2>&1; then
+        local selinux_status
+        selinux_status=$(getenforce 2>/dev/null)
+        [[ "$selinux_status" == "Enforcing" || "$selinux_status" == "Permissive" ]]
+    else
+        return 1
+    fi
+}
+
+apply_selinux_context() {
+    local file_path="$1"
+    
+    # Only apply SELinux context on Red Hat family systems with SELinux enabled
+    if is_selinux_enabled; then
+        local distro
+        distro=$(detect_distribution)
+        
+        case "$distro" in
+            "fedora"|"rhel"|"centos"|"rocky"|"almalinux")
+                log_info "Applying SELinux context for libvirt access: $file_path"
+                
+                # Try to set the appropriate SELinux context for libvirt
+                if command -v chcon >/dev/null 2>&1; then
+                    run_privileged chcon -t virt_content_t "$file_path" 2>/dev/null || {
+                        log_warning "Failed to set SELinux context with chcon, trying restorecon..."
+                        run_privileged restorecon "$file_path" 2>/dev/null || {
+                            log_warning "Failed to set SELinux context. You may need to manually set it with: sudo chcon -t virt_content_t $file_path"
+                        }
+                    }
+                else
+                    log_warning "SELinux tools not found. You may need to manually set context: sudo chcon -t virt_content_t $file_path"
+                fi
+                ;;
+        esac
+    fi
+}
+
 # Libvirt URI helper function
 get_virsh_args() {
     if [[ -n "$LIBVIRT_URI" ]]; then
@@ -808,9 +848,21 @@ create_vm_disk() {
 
 create_cloud_init_iso() {
     local temp_dir="$1"
-    local iso_file="/tmp/${VM_NAME}-cloud-init.iso"
     
-    log_info "Creating cloud-init ISO: $iso_file"
+    # Create cloud-init ISO in libvirt directory for proper permissions
+    local iso_dir="/var/lib/libvirt/cloud-init"
+    local iso_file="$iso_dir/${VM_NAME}-cloud-init.iso"
+    
+    log_info "Creating cloud-init ISO: $iso_file" >&2
+    
+    # Create subdirectory with proper privileges
+    if ! run_privileged mkdir -p "$iso_dir"; then
+        log_error "Failed to create cloud-init directory"
+        return 1
+    fi
+    
+    # Set proper directory permissions for libvirt access
+    run_privileged chmod 755 "$iso_dir"
     
     # Use genisoimage or mkisofs
     local iso_cmd="genisoimage"
@@ -818,10 +870,43 @@ create_cloud_init_iso() {
         iso_cmd="mkisofs"
     fi
     
-    if ! "$iso_cmd" -output "$iso_file" -volid cidata -joliet -rock "$temp_dir"/{user-data,meta-data,network-config} 2>/dev/null; then
-        log_error "Failed to create cloud-init ISO"
-        return 1
+    # Build the command properly to handle file paths
+    local iso_files=("$temp_dir/user-data" "$temp_dir/meta-data" "$temp_dir/network-config")
+    
+    if [[ "$IS_ROOT" == true ]]; then
+        if ! "$iso_cmd" -output "$iso_file" -volid cidata -joliet -rock "${iso_files[@]}"; then
+            log_error "Failed to create cloud-init ISO"
+            log_error "Command attempted: $iso_cmd -output $iso_file -volid cidata -joliet -rock ${iso_files[*]}"
+            log_error "Temp directory contents:"
+            ls -la "$temp_dir" || true
+            return 1
+        fi
+    elif [[ "$SUDO_AVAILABLE" == true ]]; then
+        if ! sudo "$iso_cmd" -output "$iso_file" -volid cidata -joliet -rock "${iso_files[@]}"; then
+            log_error "Failed to create cloud-init ISO"
+            log_error "Command attempted: sudo $iso_cmd -output $iso_file -volid cidata -joliet -rock ${iso_files[*]}"
+            log_error "Temp directory contents:"
+            ls -la "$temp_dir" || true
+            return 1
+        fi
+    else
+        if ! "$iso_cmd" -output "$iso_file" -volid cidata -joliet -rock "${iso_files[@]}"; then
+            log_error "Failed to create cloud-init ISO"
+            log_error "Command attempted: $iso_cmd -output $iso_file -volid cidata -joliet -rock ${iso_files[*]}"
+            log_error "Temp directory contents:"
+            ls -la "$temp_dir" || true
+            return 1
+        fi
     fi
+    
+    # Set proper file permissions and ownership for libvirt access
+    run_privileged chmod 644 "$iso_file"
+    if needs_privileges "chown" "$iso_file"; then
+        run_privileged chown libvirt-qemu:libvirt-qemu "$iso_file" 2>/dev/null || true
+    fi
+    
+    # Apply SELinux context if needed
+    apply_selinux_context "$iso_file" >&2
     
     echo "$iso_file"
 }
@@ -1082,7 +1167,7 @@ main() {
     temp_dir=$(mktemp -d)
     
     # Trap to cleanup on exit
-    trap 'cleanup_temp_files "$temp_dir" "/tmp/${VM_NAME}-cloud-init.iso"' EXIT
+    trap 'cleanup_temp_files "$temp_dir" "/var/lib/libvirt/cloud-init/${VM_NAME}-cloud-init.iso"' EXIT
     
     # Download Debian image
     local base_image
@@ -1102,8 +1187,17 @@ main() {
     # Create cloud-init ISO
     local cloud_init_iso
     if ! cloud_init_iso=$(create_cloud_init_iso "$temp_dir"); then
+        log_error "Cloud-init ISO creation failed, aborting VM creation"
         exit 1
     fi
+    
+    # Verify ISO was actually created
+    if [[ ! -f "$cloud_init_iso" ]]; then
+        log_error "Cloud-init ISO file does not exist: $cloud_init_iso"
+        exit 1
+    fi
+    
+    log_success "Cloud-init ISO created successfully: $cloud_init_iso"
     
     # Create virtual machine
     if ! create_virtual_machine "$vm_disk" "$cloud_init_iso"; then
